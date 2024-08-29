@@ -37,12 +37,12 @@ def main():
     parser.add_argument("output_path",
                         help="path to file to hold combined regridded data or folder to hold individually regridded files")
 
-    parser.add_argument("--target-y", type=str, help="target grid y dimension variable nane", default="lat")
-    parser.add_argument("--target-x", type=str, help="target grid x dimension variable nane", default="lon")
+    parser.add_argument("--target-y", type=str, help="target grid y coordinate variable nane", default="lat")
+    parser.add_argument("--target-x", type=str, help="target grid x coordinate variable nane", default="lon")
     parser.add_argument("--target-crs", type=int, help="target CRS, given as an EPSG number", default=4326)
 
-    parser.add_argument("--source-y", type=str, help="input y dimension variable nane", default="lat")
-    parser.add_argument("--source-x", type=str, help="input x dimension variable nane", default="lon")
+    parser.add_argument("--source-y", type=str, help="input y coordinate variable nane", default="lat")
+    parser.add_argument("--source-x", type=str, help="input x coordinate variable nane", default="lon")
     parser.add_argument("--source-crs", type=int, help="source CRS, given as an EPSG number", default=4326)
 
     parser.add_argument("--variables", nargs="+", help="Specify variables to process, for nearest use NAME, for other modes (min,max,mean) use NAME:MODE, to specify the output variable name use NAME:MODE:OUTPUT_NAME")
@@ -79,10 +79,13 @@ def main():
             raise Exception("If the output path is a folder, the input path should also be")
     else:
         output_folder = os.path.split(args.output_path)[0]
-        os.makedirs(output_folder)
+        if output_folder:
+            os.makedirs(output_folder)
 
     if os.path.isdir(args.input_path):
-        input_file_paths = list(map(lambda f: os.path.join(args.input_path, f), os.listdir(args.input_path)))
+
+        input_file_paths = list(map(lambda f: os.path.join(args.input_path, f),
+                                    filter(lambda name: name.endswith(".nc"),os.listdir(args.input_path))))
     else:
         input_file_paths = [args.input_path]
 
@@ -110,6 +113,7 @@ def main():
 
             except Exception as ex:
                 logger.warning(f"Error processing: {input_file_name} : {str(ex)}")
+                raise ex
                 time.sleep(RETRY_DELAY)
 
         if not ingested:

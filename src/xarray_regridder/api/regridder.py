@@ -39,7 +39,19 @@ class Regridder:
     def __init__(self, variables, grid_ds,
                  source_x, source_y, source_crs, target_x, target_y, target_crs,
                  coarsen=None):
+        """
+        Create a regridder
 
+        :param variables: list of variable names from the source dataset(s) to regrid
+        :param grid_ds: the target grid
+        :param source_x: the name of the x-coordinate in the source dataset(s)
+        :param source_y: the name of the y-coordinate in the source dataset(s)
+        :param source_crs: the source CRS (as an EPSG number)
+        :param target_x: the name of the x-coordinate in the target grid
+        :param target_y: the name of the y-coordinate in the target grid
+        :param target_crs: the target CRS (as an EPSG number)
+        :param coarsen:
+        """
         self.variables = [self.decode_variable_mode(v) for v in variables]
         self.source_x = source_x
         self.source_y = source_y
@@ -207,8 +219,8 @@ class Regridder:
 
                         # check that in each stride, the set of valid target indices are unique
                         # if this is not the case, some source values will be ignored
-                        ones = xr.DataArray(np.ones((source_height,source_width),dtype=int),dims=("y","x"))
-                        target_data = xr.DataArray(np.zeros((self.target_height+1,self.target_width+1),dtype=int),dims=("y","x"))
+                        ones = xr.DataArray(np.ones((source_height,source_width),dtype=int),dims=(self.source_y,self.source_x))
+                        target_data = xr.DataArray(np.zeros((self.target_height+1,self.target_width+1),dtype=int),dims=(self.target_y,self.target_x))
                         target_data[iy, ix] = ones.isel(**s).data
                         valid_target_data = target_data[:-1, :-1]
                         valid_target_count = valid_target_data.sum().item()
