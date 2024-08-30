@@ -1,6 +1,6 @@
 # xarray_regridder
 
-A flexible regridding utility API nd CLI based on xarray and pyproj.  Maps from input data grid(s) to a regular target grid.  
+A flexible regridding utility API and CLI based on xarray and pyproj.  Maps from input data grid(s) onto a regular target grid.  
 
 Note - the target grid must have equally spaced, one-dimensional coordinates.
 
@@ -10,19 +10,29 @@ Note - the target grid must have equally spaced, one-dimensional coordinates.
 conda create -n xarray_regridder_env python=3.10
 conda activate xarray_regridder_env
 conda install netcdf4 xarray pyproj
-pip install git+https://github.com/surftemp/netcdf2html.git
+pip install git+https://github.com/surftemp/xarray_regridder.git
 ```
 
-## supported regrdding modes
+## supported regridding modes
 
-this tool will analyse the set of source pixels that map to each destination pixel in the regular target grid.
+This tool will analyse the set of source pixels that map to each destination pixel in the regular target grid.
 
-| mode name | function                                                                      |
-|-----------|-------------------------------------------------------------------------------|
- | min       | retain the min value of all source pixels that map to a destination pixel     |
-| max       | retain the max value of all source pixels that map to a destination pixel     |
-| mean      | retain the min value of all source pixels that map to a destination pixel     |
-| nearest   | retain the value of the nearest source pixels that map to a destination pixel |
+| mode name | function                                                                                |
+|-----------|-----------------------------------------------------------------------------------------|
+ | min       | retain the min value of all valid source pixels that map to a destination pixel         |
+| max       | retain the max value of all valid source pixels that map to a destination pixel         |
+| mean      | retain the mean value of all valid source pixels that map to a destination pixel        |
+| nearest   | retain the value of the nearest valid source pixel that maps to a destination pixel     |
+ | sum       | retain the sum of all valid source pixels that maps to a destination pixel              |
+ | count     | retain the count of all valid source pixels that maps to a destination pixel            |
+| distance  | retain the distance of the closest valid source pixels that maps to a destination pixel |
+
+## limitations
+
+* All input variables must have only 2 non-unit dimensions, with the Y dimension placed before the X dimension
+* The mapping is performed by binning each source pixel onto the target grid
+* Coordinates on the target grid MUST be evenly spaced
+* Nearest source to destination regridding is not supported.  If the target grid is coarser than the source grid, the output data will have missing values.
 
 ## input data
 

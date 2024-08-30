@@ -35,7 +35,7 @@ def main():
     parser.add_argument("target_grid_path",
                         help="path to file defining grid with 1D lat/lon onto which data is to be regridded")
     parser.add_argument("output_path",
-                        help="path to file to hold combined regridded data or folder to hold individually regridded files")
+                        help="path to file to hold combined regridded data OR folder to hold individually regridded files")
 
     parser.add_argument("--target-y", type=str, help="target grid y coordinate variable nane", default="lat")
     parser.add_argument("--target-x", type=str, help="target grid x coordinate variable nane", default="lon")
@@ -49,8 +49,10 @@ def main():
 
     parser.add_argument("--limit", type=int, help="process only this many scenes (for testing)", default=None)
     parser.add_argument("--stride", type=int, help="set the stride", default=1)
-    parser.add_argument("--coarsen", type=int, help="coarsen the target grid (for testing)", default=None)
     parser.add_argument("--nr-retries", type=int, help="use this many re-attempts to process each input file", default=0)
+    parser.add_argument("--attr", nargs=2, action="append", type=str, metavar=("NAME","VALUE"), help="add global attributes", required=False)
+    parser.add_argument("--chunk-sizes", nargs=2, type=str, metavar=("Y-DIMENSION-SIZE", "X-DIMENSION-SIZE"),
+                        help="set the chunk sizes for regridded variables", required=False)
 
     args = parser.parse_args()
 
@@ -68,8 +70,7 @@ def main():
         source_crs=args.source_crs,
         target_x=args.target_x,
         target_y=args.target_y,
-        target_crs=args.target_crs,
-        coarsen=args.coarsen)
+        target_crs=args.target_crs)
 
     output_individual_files = False
     if os.path.isdir(args.output_path):
@@ -113,14 +114,16 @@ def main():
 
             except Exception as ex:
                 logger.warning(f"Error processing: {input_file_name} : {str(ex)}")
-                raise ex
                 time.sleep(RETRY_DELAY)
 
         if not ingested:
             logger.error(f"Unable to process: {input_file_name}")
         else:
             if output_individual_files:
-                output_ds, encodings = regridder.get_output(time_da=time_da)
+                output_ds, encodings = regridder.get_output(time_da=time_da, chunk_sizes=args.chunk_sizes)
+                if args.add_global_attributes:
+                    for (name,value) in args.attr:
+                        output_ds.attrs[name] = value
                 output_path = os.path.join(args.output_path, input_file_name)
                 for retry in range(0, args.nr_retries + 1):
                     try:
@@ -140,7 +143,11 @@ def main():
 
     if not output_individual_files:
         # output accumulated results from merging all input files
-        output_ds, encodings = regridder.get_output()
+        output_ds, encodings = regridder.get_output(chunk_sizes=args.chunk_sizes)
+
+        if args.add_global_attributes:
+            for (name, value) in args.attr:
+                output_ds.attrs[name] = value
 
         for retry in range(0, args.nr_retries + 1):
             try:

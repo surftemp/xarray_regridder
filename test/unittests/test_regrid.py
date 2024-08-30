@@ -1,9 +1,24 @@
+#     EOCIS high resolution data processing for the British Isles
+#
+#     Copyright (C) 2023-2024  EOCIS and National Centre for Earth Observation (NCEO)
+#
+#     This program is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This program is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import unittest
 import xarray as xr
 import numpy as np
 import math
-import tempfile
 
 import logging
 
@@ -51,8 +66,7 @@ class TestCase(unittest.TestCase):
         self.assertEqual(2*grid_w, source_w)
 
         r = Regrid(grid_ds=grid_ds, variables=["data:min","data:max","data:mean"],
-                 source_x="x", source_y="y", source_crs=27700, target_x="x", target_y="y", target_crs=27700,
-                 coarsen=None)
+                 source_x="x", source_y="y", source_crs=27700, target_x="x", target_y="y", target_crs=27700)
 
         r.ingest(source_ds)
 
@@ -106,9 +120,8 @@ class TestCase(unittest.TestCase):
 
         print("target dimension: " + str((grid_h, grid_w)))
 
-        r = Regrid(grid_ds=grid_ds, variables=["data:nearest"],
-                 source_x="x", source_y="y", source_crs=27700, target_x="x", target_y="y", target_crs=27700,
-                 coarsen=None)
+        r = Regrid(grid_ds=grid_ds, variables=["data:nearest","data:distance:nearest_distance"],
+                 source_x="x", source_y="y", source_crs=27700, target_x="x", target_y="y", target_crs=27700)
 
         r.ingest(source_ds, stride=4)
         output_ds, output_encodings = r.get_output()

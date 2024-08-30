@@ -37,20 +37,18 @@ class DistanceMethods(enum.Enum):
 class Regridder:
 
     def __init__(self, variables, grid_ds,
-                 source_x, source_y, source_crs, target_x, target_y, target_crs,
-                 coarsen=None):
+                 source_x, source_y, source_crs, target_x, target_y, target_crs):
         """
         Create a regridder
 
-        :param variables: list of variable names from the source dataset(s) to regrid
-        :param grid_ds: the target grid
+        :param variables: list of variable input_name:mode:output_name from the source dataset(s) to regrid
+        :param grid_ds: the target grid dataset
         :param source_x: the name of the x-coordinate in the source dataset(s)
         :param source_y: the name of the y-coordinate in the source dataset(s)
         :param source_crs: the source CRS (as an EPSG number)
         :param target_x: the name of the x-coordinate in the target grid
         :param target_y: the name of the y-coordinate in the target grid
         :param target_crs: the target CRS (as an EPSG number)
-        :param coarsen:
         """
         self.variables = [self.decode_variable_mode(v) for v in variables]
         self.source_x = source_x
@@ -60,38 +58,33 @@ class Regridder:
         self.target_y = target_y
         self.target_crs = target_crs
 
-        self.coarsen = coarsen
-
         self.target_height = None
         self.target_width = None
         self.target_x_dim = None
         self.target_y_dim = None
 
-        self.accumulated_mins = {}
-        self.accumulated_maxes = {}
-        self.accumulated_means = {}
-        self.accumulated_nearest = {}
-
         self.dataset_attrs = {}
         self.variable_attrs = {}
-
-        self.counts = {}  # mean only
-        self.closest_sq_distances = None  # nearest only
 
         self.dtypes = {}
 
         self.logger = logging.getLogger("Regrid")
 
-        self.compute_distances = False
-        self.distance_method = None
-
         output_names = set()
+
+        self.input_vars = set()
         for (v,mode,output_name) in self.variables:
+            self.input_vars.add(v)
             if output_name in output_names:
                 raise ValueError(f"output variables have duplicate names: {output_name}")
             else:
                 output_names.add(output_name)
-            if mode == "nearest":
+
+        # work out whether distances between source and destination pixels are needed, and which method to use
+        self.compute_distances = False
+        self.distance_method = None
+        for (v, mode, output_name) in self.variables:
+            if mode == "nearest" or mode == "distance":
                 self.compute_distances = True
                 if target_crs == 4326:
                     self.distance_method = DistanceMethods.SPHERICAL
@@ -100,12 +93,9 @@ class Regridder:
                     if crs.axis_info[0].unit_name == 'metre':
                         self.distance_method = DistanceMethods.CARTESIAN
                     else:
-                        raise ValueError("Nearest neighbour currently only supported if the target CRS is 27700")
+                        raise ValueError("Nearest neighbour currently only supported if the target CRS is EPSG:4326 or has metre as its unit")
 
         self.grid = grid_ds
-
-        if self.coarsen:
-            self.grid = self.grid[{'nj': slice(None, None, self.coarsen), 'ni': slice(None, None, self.coarsen)}]
 
         # check target x and y are 1 dimensional
         if len(self.grid[self.target_x].shape) != 1:
@@ -122,7 +112,7 @@ class Regridder:
         self.target_x0 = float(self.grid[self.target_x][0])
         self.target_xN = float(self.grid[self.target_x][-1])
 
-        # get the target grid dimensions
+        # get the target grid dimensions and size
         self.target_height = self.grid[self.target_y].shape[0]
         self.target_width = self.grid[self.target_x].shape[0]
 
@@ -147,13 +137,25 @@ class Regridder:
         else:
             raise ValueError(
                 f"Invalid variable directive: {variable} should be INPUT_NAME or INPUT_NAME:MODE or INPUT_NAME:MODE:OUTPUT_NAME")
-        if mode not in ["min", "max", "mean", "nearest"]:
+        if mode not in ["min", "max", "mean", "nearest", "count", "sum", "distance"]:
             raise ValueError(f"Invalid mode {mode} for variable {variable}")
         if output_name == "":
             output_name = variable_name + "_" + mode
         return variable_name, mode, output_name
 
     def ingest(self,ds, stride=1):
+
+        for v in self.input_vars:
+            da = ds[v].squeeze()
+            if len(da.dims) != 2:
+                self.logger.error(
+                    f"variable {v} does not have exactly two non-unit dimensions, ignoring this input data")
+                return False
+
+            if v not in self.variable_attrs:
+                self.variable_attrs[v] = da.attrs
+            if v not in self.dtypes:
+                self.dtypes[v] = da.dtype
 
         self.dataset_attrs = ds.attrs
 
@@ -205,6 +207,9 @@ class Regridder:
         class InvalidStrideException(Exception):
             pass
 
+        # establish the stride - so that the number of passes over the input data is minimised but
+        # ensures that no input pixels are assigned to the same output pixel on a pass
+
         while True:
             indices_by_slice = {}
             try:
@@ -218,7 +223,7 @@ class Regridder:
                         indices_by_slice[(ys, xs)] = (s, iy.data, ix.data)
 
                         # check that in each stride, the set of valid target indices are unique
-                        # if this is not the case, some source values will be ignored
+                        # if this is not the case, some source values will be ignored, raise an exception
                         ones = xr.DataArray(np.ones((source_height,source_width),dtype=int),dims=(self.source_y,self.source_x))
                         target_data = xr.DataArray(np.zeros((self.target_height+1,self.target_width+1),dtype=int),dims=(self.target_y,self.target_x))
                         target_data[iy, ix] = ones.isel(**s).data
@@ -232,79 +237,74 @@ class Regridder:
                 stride *= 2
                 self.logger.warning(f"Increasing stride to {stride} to avoid data loss")
 
-        input_vars = set()
-        for (v, _, _) in self.variables:
-            input_vars.add(v)
+        for xs in range(0, stride):
+            for ys in range(0, stride):
+                slice_idx = xs * stride + ys
+                self.logger.info(f"\t\tProcessing slice {slice_idx + 1}/{stride ** 2}")
+                s, iy, ix = indices_by_slice[(ys, xs)]
+                sq_dist = None
+                if self.compute_distances:
+                    # calculate squared distances for this stride and cache them if not already cached
+                    source_coords_x = np.zeros((self.target_height + 1, self.target_width + 1))
+                    source_coords_x[:, :] = np.nan
+                    source_coords_y = np.zeros((self.target_height + 1, self.target_width + 1))
+                    source_coords_y[:, :] = np.nan
+                    source_coords_x[iy, ix] = x2d.isel(**s).data
+                    source_coords_y[iy, ix] = y2d.isel(**s).data
+                    if self.distance_method is DistanceMethods.CARTESIAN:
+                        sq_dist = np.power(source_coords_y[:-1, :-1] - target_y2d, 2) \
+                                             + np.power(source_coords_x[:-1, :-1] - target_x2d, 2)
+                    else:
+                        # x is a longitude, adjust using cos(radians(y))
+                        sq_dist = np.power(
+                            np.cos(np.radians(target_y2d)) * source_coords_x[:-1, :-1] - target_x2d, 2) \
+                                             + np.power(source_coords_y[:-1, :-1] - target_y2d, 2)
 
-        for v in input_vars:
+                for v in self.input_vars:
+                    self.logger.info(f"\t\tCalculating statistics for {v}")
 
-            if self.compute_distances:
-                self.closest_sq_distances = np.zeros((self.target_height, self.target_width),
-                                                     dtype="float32")
-                self.closest_sq_distances[:, :] = np.finfo(np.float32).max
+                    da = ds[v].squeeze()
 
-            self.dtypes[v] = ds[v].dtype
-            da = ds[v].squeeze()
+                    target_data = np.zeros((self.target_height + 1, self.target_width + 1))
+                    target_data[:, :] = np.nan
 
-            if v not in self.variable_attrs:
-                self.variable_attrs[v] = da.attrs
+                    target_data[iy, ix] = da.isel(**s).data
+                    valid_target_data = target_data[:-1, :-1]
 
-            if len(da.dims) == 2:
-                self.logger.info(f"\tCalculating statisics for {v}")
+                    # accumulate statistics for this variable on this stride
+                    if v in self.accumulated_mins:
+                        self.accumulated_mins[v] = np.fmin(valid_target_data, self.accumulated_mins[v])
 
-                for xs in range(0, stride):
-                    for ys in range(0, stride):
+                    if v in self.accumulated_maxes:
+                        self.accumulated_maxes[v] = np.fmax(valid_target_data, self.accumulated_maxes[v])
 
-                        if v == "test_ones":
-                            self.counts[v] = np.zeros((self.target_height, self.target_width))
+                    if v in self.accumulated_counts:
+                        self.accumulated_counts[v] = self.accumulated_counts[v] + np.where(np.isnan(valid_target_data), 0, 1)
 
-                        target_data = np.zeros((self.target_height + 1, self.target_width + 1))
-                        target_data[:, :] = np.nan
-                        slice_idx = xs * stride + ys
-                        self.logger.info(f"\t\tProcessing slice {slice_idx + 1}/{stride ** 2}")
-                        s, iy, ix = indices_by_slice[(ys, xs)]
-                        target_data[iy, ix] = da.isel(**s).data
-                        valid_target_data = target_data[:-1, :-1]
-                        if v in self.accumulated_mins:
-                            self.accumulated_mins[v] = np.fmin(valid_target_data, self.accumulated_mins[v])
-                        if v in self.accumulated_maxes:
-                            self.accumulated_maxes[v] = np.fmax(valid_target_data, self.accumulated_maxes[v])
-                        if v in self.counts:
-                            self.counts[v] = self.counts[v] + np.where(np.isnan(valid_target_data), 0, 1)
-                        if v in self.accumulated_means:
-                            self.accumulated_means[v] = self.accumulated_means[v] \
-                                                        + np.where(np.isnan(valid_target_data), 0, valid_target_data)
-                        if v in self.accumulated_nearest:
-                            source_coords_x = np.zeros((self.target_height + 1, self.target_width + 1))
-                            source_coords_x[:, :] = np.nan
-                            source_coords_y = np.zeros((self.target_height + 1, self.target_width + 1))
-                            source_coords_y[:, :] = np.nan
-                            source_coords_x[iy, ix] = x2d.isel(**s).data
-                            source_coords_y[iy, ix] = y2d.isel(**s).data
-                            if self.distance_method is DistanceMethods.CARTESIAN:
-                                sq_dist = np.power(source_coords_y[:-1, :-1] - target_y2d, 2) \
-                                          + np.power(source_coords_x[:-1, :-1] - target_x2d, 2)
-                            else:
-                                # y is a latitude adjust using cos(radians(y))
-                                sq_dist = np.power(
-                                    np.cos(np.radians(target_y2d)) * source_coords_y[:-1, :-1] - target_y2d, 2) \
-                                          + np.power(source_coords_x[:-1, :-1] - target_x2d, 2)
-                            self.accumulated_nearest[v] = np.where(sq_dist < self.closest_sq_distances,
-                                                                   valid_target_data, self.accumulated_nearest[v])
-                            self.closest_sq_distances = np.where(np.isnan(sq_dist), self.closest_sq_distances,
-                                                                 np.where(sq_dist < self.closest_sq_distances, sq_dist,
-                                                                          self.closest_sq_distances))
-            else:
-                self.logger.error(
-                    f"variable {v} does not have exactly two non-unit dimensions, ignoring")
-                return False
+                    if v in self.accumulated_sums:
+                        self.accumulated_sums[v] = self.accumulated_sums[v] \
+                                                    + np.where(np.isnan(valid_target_data), 0, valid_target_data)
+
+                    if v in self.accumulated_nearest:
+                        self.accumulated_nearest[v] = \
+                            np.where(np.logical_or(np.isnan(sq_dist),np.isnan(valid_target_data)),
+                                self.accumulated_nearest[v],
+                                np.where(sq_dist < self.accumulated_sqdistances[v],
+                                    valid_target_data,
+                                    self.accumulated_nearest[v]))
+
+                    if v in self.accumulated_sqdistances:
+                        self.accumulated_sqdistances[v] = \
+                            np.where(np.logical_or(np.isnan(sq_dist),np.isnan(valid_target_data)),
+                                self.accumulated_sqdistances[v],
+                                np.where(sq_dist < self.accumulated_sqdistances[v],
+                                    sq_dist,
+                                    self.accumulated_sqdistances[v]))
+
 
         return True
 
-    def get_output(self, time_da=None):
-        for (v, mode, _) in self.variables:
-            if mode == "mean":
-                self.accumulated_means[v] = np.where(self.counts[v] > 0, self.accumulated_means[v]/self.counts[v], np.nan)
+    def get_output(self, time_da=None, chunk_sizes=None):
 
         output_ds = self.grid.copy()
         if time_da is not None:
@@ -315,79 +315,90 @@ class Regridder:
         encodings = {}
 
         for (v,mode,output_variable) in self.variables:
+
+            encodings[output_variable] = {"zlib": True, "complevel": 5, "dtype": str(self.dtypes[v])}
+
             accumulated = None
             if mode == "mean":
-                accumulated = self.accumulated_means[v]
+                accumulated = np.where(self.accumulated_counts[v] > 0, self.accumulated_sums[v]/self.accumulated_counts[v], np.nan)
             elif mode == "max":
                 accumulated = self.accumulated_maxes[v]
             elif mode == "min":
                 accumulated = self.accumulated_mins[v]
             elif mode == "nearest":
                 accumulated = self.accumulated_nearest[v]
+            elif mode == "count":
+                accumulated = self.accumulated_counts[v]
+                encodings[output_variable] = {"zlib": True, "complevel": 5, "dtype": "int32", "_FillValue": -999}
+            elif mode == "sum":
+                accumulated = self.accumulated_sums[v]
+            elif mode == "distance":
+                accumulated = np.sqrt(np.where(self.accumulated_sqdistances[v] < np.finfo(np.float32).max, self.accumulated_sqdistances[v], np.nan))
+
+            if chunk_sizes:
+                encodings[output_variable]["chunksizes"] = chunk_sizes
 
             if time_da is not None:
                 accumulated = np.expand_dims(accumulated,axis=0)
 
-            encodings[output_variable] = {"zlib": True, "complevel": 5, "dtype": str(self.dtypes[v])}
             if np.issubdtype(self.dtypes[v], np.integer):
                 encodings[output_variable]["_FillValue"] = -999
 
             da = xr.DataArray(data=accumulated,dims=dims,attrs=self.variable_attrs.get(v,None))
             output_ds[output_variable] = da
 
-            if mode == "mean":
-                # also output the counts
-                output_variable = v+"_counts"
-                arr = self.counts[v]
-                if time_da is not None:
-                    arr = np.expand_dims(arr,axis=0)
-                da = xr.DataArray(data=arr, dims=dims)
-                output_ds[output_variable] = da
-                encodings[output_variable] = {"zlib": True, "complevel": 5, "dtype": "int32", "_FillValue":-999}
-
         for (name,value) in self.dataset_attrs.items():
             output_ds.attrs[name] = value
-
-        if self.compute_distances:
-            distances = np.sqrt(np.where(self.closest_sq_distances < np.finfo(np.float32).max, self.closest_sq_distances, np.nan))
-            if time_da is not None:
-               distances = np.expand_dims(distances,axis=0)
-            da = xr.DataArray(data=distances, dims=dims, attrs={ "units": "m"})
-            output_ds["nearest_distance"] = da
-            encodings["nearest_distance"] = {"zlib": True, "complevel": 5, "dtype": "float32"}
 
         output_ds.set_coords([self.target_y, self.target_x])
         return output_ds, encodings
 
     def reset(self):
+        self.dtypes = {}
         self.dataset_attrs = {}
         self.variable_attrs = {}
-        self.accumulated_mins = {}
-        self.accumulated_maxes = {}
-        self.accumulated_means = {}
-        self.accumulated_nearest = {}
 
-        self.counts = {}  # mean only
-        self.closest_sq_distances = None
-
-        if self.compute_distances:
-            self.closest_sq_distances = np.zeros((self.target_height,self.target_width),dtype="float32")
-            self.closest_sq_distances[:,:] = np.finfo(np.float32).max
+        # (re)create dictionaries that map from a variable name to a numpy array on the target grid
+        # which accumulates statistics on that variable
+        self.accumulated_sums = {}        # variable name => sum of source pixels
+        self.accumulated_counts = {}      # variable name => count of source pixels
+        self.accumulated_mins = {}        # variable name => min of source pixels
+        self.accumulated_maxes = {}       # variable name => max of source pixels
+        self.accumulated_nearest = {}     # variable name => value of "nearest" source pixel
+        self.accumulated_sqdistances = {} # variable name => squared distance to nearest valid value
 
         for (v,mode,output_name) in self.variables:
             if mode == "mean":
-                self.counts[v] = np.zeros((self.target_height, self.target_width))
-                self.accumulated_means[v] = np.zeros((self.target_height, self.target_width)) # will hold the sum initially
+                if v not in self.accumulated_counts:
+                    self.accumulated_counts[v] = np.zeros((self.target_height, self.target_width))
+                if v not in self.accumulated_sums:
+                    self.accumulated_sums[v] = np.zeros((self.target_height, self.target_width))
             elif mode == "min":
-                a = np.zeros((self.target_height, self.target_width))
-                a[:, :] = np.nan
-                self.accumulated_mins[v] = a  # will hold the mins
+                if v not in self.accumulated_mins:
+                    a = np.zeros((self.target_height, self.target_width))
+                    a[:, :] = np.nan
+                    self.accumulated_mins[v] = a
             elif mode == "max":
-                a = np.zeros((self.target_height, self.target_width))
-                a[:, :] = np.nan
-                self.accumulated_maxes[v] = a  # will hold the maxes
+                if v not in self.accumulated_maxes:
+                    a = np.zeros((self.target_height, self.target_width))
+                    a[:, :] = np.nan
+                    self.accumulated_maxes[v] = a
             elif mode == "nearest":
-                a = np.zeros((self.target_height, self.target_width))
-                a[:, :] = np.nan
-                self.accumulated_nearest[v] = a
+                if v not in self.accumulated_nearest:
+                    a = np.zeros((self.target_height, self.target_width))
+                    a[:, :] = np.nan
+                    self.accumulated_nearest[v] = a
+                if v not in self.accumulated_sqdistances:
+                    self.accumulated_sqdistances[v] = np.zeros((self.target_height, self.target_width), dtype="float32")
+                    self.accumulated_sqdistances[v][:, :] = np.finfo(np.float32).max
+            elif mode == "count":
+                if v not in self.accumulated_counts:
+                    self.accumulated_counts[v] = np.zeros((self.target_height, self.target_width))
+            elif mode == "sum":
+                if v not in self.accumulated_sums:
+                    self.accumulated_sums[v] = np.zeros((self.target_height, self.target_width))
+            elif mode == "distance":
+                if v not in self.accumulated_sqdistances:
+                    self.accumulated_sqdistances[v] = np.zeros((self.target_height, self.target_width), dtype="float32")
+                    self.accumulated_sqdistances[v][:, :] = np.finfo(np.float32).max
 
