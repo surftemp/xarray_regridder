@@ -1,15 +1,17 @@
 # xarray_regridder
 
-A flexible regridding utility API and CLI based on xarray and pyproj.  Maps from input data grid(s) onto a regular target grid.  
+A flexible regridding utility API and CLI based on xarray, pyproj and xesmf.  Maps from input data grid(s) onto a regular target grid.  
 
 Note - the target grid must have equally spaced, one-dimensional coordinates.
 
 ## Environment
 
+Installation into a miniforge enviromnent is suggested.  See [https://github.com/conda-forge/miniforge](https://github.com/conda-forge/miniforge) for installing miniforge.
+
 ```
-conda create -n xarray_regridder_env python=3.10
-conda activate xarray_regridder_env
-conda install netcdf4 xarray pyproj
+mamba create -n xarray_regridder_env python=3.10
+mamba activate xarray_regridder_env
+mamba install netcdf4 xarray pyproj xesmf
 pip install git+https://github.com/surftemp/xarray_regridder.git
 ```
 
