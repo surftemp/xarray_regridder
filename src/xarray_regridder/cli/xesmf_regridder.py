@@ -87,6 +87,27 @@ def regrid(input_path, grid_path, output_path, method, limit=None, max_distance=
     idx = 1
     processed = 0
     total = len(input_file_paths)
+
+    grid = xr.open_dataset(grid_path)
+
+    if len(grid["lat"].dims) == 2:
+        # see if we can reduce lat/lon from 2d to 1d
+        if np.array_equal(grid.lat[:, 0].data, grid.lat[:, 1].data) and np.array_equal(grid.lon[0, :], grid.lon[1, :]):
+            print("Reducing grid lat/lon from 2D to 1D")
+            grid["lat"] = xr.DataArray(grid.lat[:, 0].squeeze().data, dims=("nj",))
+            grid["lon"] = xr.DataArray(grid.lon[0, :].squeeze().data, dims=("ni",))
+
+    if len(grid["lat"].dims) == 1:
+        # expand 1d lat/lon to 2d
+        shape_2d = (grid["lat"].shape[0], grid["lon"].shape[0])
+        lat_2d = np.broadcast_to(grid["lat"].data[None].T, shape_2d)
+        lon_2d = np.broadcast_to(grid["lon"].data, shape_2d)
+        dims_2d = (grid["lat"].dims[0], grid["lon"].dims[0])
+        grid["lat2d"] = xr.DataArray(data=lat_2d, dims=dims_2d)
+        grid["lon2d"] = xr.DataArray(data=lon_2d, dims=dims_2d)
+
+    m_per_degree_lon = m_per_degree * np.cos(np.radians(grid["lat"].mean(skipna=True)))
+
     for input_file_path in input_file_paths:
         input_file_name = os.path.split(input_file_path)[1]
         output_file_path = os.path.join(output_path, input_file_name)
@@ -99,17 +120,21 @@ def regrid(input_path, grid_path, output_path, method, limit=None, max_distance=
 
         ds = xr.open_dataset(input_file_path)
 
-        grid = xr.open_dataset(grid_path)
-
-        lat_dims = set(ds.lat.dims)
+        lat_dims = set(ds["lat"].dims)
 
         # track the names and original types of the variables to be regridded
         input_variables = []
         for name in ds.variables:
-            if name not in {"lat","lon"}:
+            if name not in {"lon", "lat"}:
                 v = ds.variables[name]
                 if set(v.dims).issuperset(lat_dims):
-                    input_variables.append((name,v.dtype))
+                    input_variables.append((name, v.dtype))
+
+        if method == "nearest_s2d" and (max_distance or output_distances_as):
+            # we will need to bring through the source lats and lons so  we can compute distance
+            # create dummy lat/lon variables in the input data to enable this
+            ds["latitude"] = xr.DataArray(ds["lat"].data, dims=ds["lat"].dims)
+            ds["longitude"] = xr.DataArray(ds["lon"].data, dims=ds["lon"].dims)
 
         # construct a fingerprint which characterises the input and output grids
         # using the lat-lons for each corner (2D) or range end (1D)
@@ -158,32 +183,41 @@ def regrid(input_path, grid_path, output_path, method, limit=None, max_distance=
                 "output_lon1": "%0.6f" % float(grid.lon[-1]),
             })
 
-
         cached_filename = None
 
         if cache_folder:
             cached_filename = read_cache(cache_folder,fingerprint)
 
         regridder = xe.Regridder(ds, grid, method, weights=cached_filename)
-        ds_regridded = regridder(ds)
+
+        ds_regridded = regridder(ds, keep_attrs=True)
+        ds_regridded["lat"] = xr.DataArray(grid["lat"].data, dims=grid["lat"].dims, attrs=grid["lat"].attrs)
+        ds_regridded["lon"] = xr.DataArray(grid["lon"].data, dims=grid["lon"].dims, attrs=grid["lon"].attrs)
 
         # work out the distances between source and destination pixel centres, method=nearest_s2d only
         if method == "nearest_s2d" and (max_distance or output_distances_as):
-            m_per_degree_lat = m_per_degree*np.cos(np.radians(grid.lat))
-            distances = np.sqrt(np.power((grid.lon - ds_regridded.lon)*m_per_degree_lat,2)+np.power((grid.lat - ds_regridded.lat)*m_per_degree,2))
+
+            grid_2d_lat = "lat"
+            grid_2d_lon = "lon"
+            if len(grid["lat"].dims) == 1:
+                grid_2d_lat = "lat2d"
+                grid_2d_lon = "lon2d"
+
+            distances = np.sqrt(np.power((grid[grid_2d_lon] - ds_regridded["longitude"])*m_per_degree_lon,2)+np.power((grid[grid_2d_lat] - ds_regridded["latitude"])*m_per_degree,2))
             if max_distance:
                 # mask out output pixels too far from the nearest source pixels
                 for (name,dtype) in input_variables:
                     ds_regridded[name] = ds_regridded[name].where(distances<max_distance,0 if np.issubdtype(dtype, np.integer) else np.nan)
             if output_distances_as:
-                ds_regridded[output_distances_as] = xr.DataArray(distances, dims=ds_regridded.lat.dims)
+                ds_regridded[output_distances_as] = xr.DataArray(distances, dims=ds_regridded["latitude"].dims)
+            # now that distance has been computed, remove the dummy lat/lons
+            del ds_regridded["latitude"]
+            del ds_regridded["longitude"]
 
-        if method == "nearest_s2d":
-            # nearest_s2d will write the lats/lons of the nearest source pixel, replace these with the target grid lat/lon
-            ds_regridded["lat"] = xr.DataArray(grid.lat.data,dims=ds_regridded.lat.dims)
-            ds_regridded["lon"] = xr.DataArray(grid.lon.data,dims=ds_regridded.lon.dims)
-
-        copy_metadata_ds(ds_regridded,ds)
+        # copy in variables from the target grid if they are not already present in the regridded dataset
+        for v in grid.variables:
+            if v not in ds_regridded.variables:
+                ds_regridded[v] = grid[v]
 
         encoding = {var_name: {"zlib": True, "complevel": 5} for var_name in list(ds_regridded.variables.keys()) if
                      var_name not in ["time"]}
@@ -200,7 +234,7 @@ def regrid(input_path, grid_path, output_path, method, limit=None, max_distance=
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("input_data_path",
+    parser.add_argument("input_path",
                         help="input data file to be regridded or folder containing files to be regridded")
     parser.add_argument("target_grid_path",
                         help="path to file defining grid lat/lon ontop which data is to be regridded")
