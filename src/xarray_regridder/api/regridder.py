@@ -224,7 +224,7 @@ class Regridder:
 
                         # check that in each stride, the set of valid target indices are unique
                         # if this is not the case, some source values will be ignored, raise an exception
-                        ones = xr.DataArray(np.ones((source_height,source_width),dtype=int),dims=(self.source_y,self.source_x))
+                        ones = xr.DataArray(np.ones((source_height,source_width),dtype=int),dims=(source_y_dim,source_x_dim))
                         target_data = xr.DataArray(np.zeros((self.target_height+1,self.target_width+1),dtype=int),dims=(self.target_y,self.target_x))
                         target_data[iy, ix] = ones.isel(**s).data
                         valid_target_data = target_data[:-1, :-1]

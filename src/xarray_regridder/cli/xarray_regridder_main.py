@@ -81,13 +81,14 @@ def main():
     else:
         output_folder = os.path.split(args.output_path)[0]
         if output_folder:
-            os.makedirs(output_folder)
+            os.makedirs(output_folder, exist_ok=True)
 
     if os.path.isdir(args.input_path):
 
         input_file_paths = list(map(lambda f: os.path.join(args.input_path, f),
                                     filter(lambda name: name.endswith(".nc"),os.listdir(args.input_path))))
     else:
+        output_individual_files = True
         input_file_paths = [args.input_path]
 
     idx = 1
@@ -113,7 +114,7 @@ def main():
                 ingested = regridder.ingest(ds, args.stride)
 
             except Exception as ex:
-                logger.warning(f"Error processing: {input_file_name} : {str(ex)}")
+                logger.exception(f"Error processing: {input_file_name} : {str(ex)}")
                 time.sleep(RETRY_DELAY)
 
         if not ingested:
@@ -121,10 +122,14 @@ def main():
         else:
             if output_individual_files:
                 output_ds, encodings = regridder.get_output(time_da=time_da, chunk_sizes=args.chunk_sizes)
-                if args.add_global_attributes:
+                if args.attr:
                     for (name,value) in args.attr:
                         output_ds.attrs[name] = value
-                output_path = os.path.join(args.output_path, input_file_name)
+                if os.path.isdir(args.output_path):
+                    output_path = os.path.join(args.output_path, input_file_name)
+                else:
+                    output_path = args.output_path
+
                 for retry in range(0, args.nr_retries + 1):
                     try:
                         logger.info(f"writing: {output_path}")
@@ -145,7 +150,7 @@ def main():
         # output accumulated results from merging all input files
         output_ds, encodings = regridder.get_output(chunk_sizes=args.chunk_sizes)
 
-        if args.add_global_attributes:
+        if args.attr:
             for (name, value) in args.attr:
                 output_ds.attrs[name] = value
 
