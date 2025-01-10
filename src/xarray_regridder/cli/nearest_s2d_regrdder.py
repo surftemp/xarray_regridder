@@ -132,6 +132,10 @@ def main():
                 total_windows += 1
 
     window_count = 0
+
+    # track how many pixels are copied in
+    total_n = 0
+
     p = Progress("Processed")
     for y_off in range(start_y, end_y, offset):
 
@@ -165,6 +169,7 @@ def main():
             ds2_filtered = ds2.where(include,drop=True)
 
             n_filtered = ds2_filtered.x.shape[0]
+            total_n += n_filtered
 
             if n_filtered == 0:
                 continue
@@ -204,6 +209,11 @@ def main():
 
             window_count += 1
             p.report(f"{n_filtered} pixels in area ({y_off},{x_off})", window_count/total_windows)
+
+    # if no pixels are included, don't write an empty output file
+    if total_n == 0:
+        print(f"Skipping writing empty output to {args.output_path}")
+        return
 
     # remove the distances variable unless needed for debugging
     del output_ds["distances"]
