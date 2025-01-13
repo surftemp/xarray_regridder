@@ -69,6 +69,7 @@ def main():
     parser.add_argument("--window-size", type=float, help="Specify size of sliding window on target grid, in pixels", default=1000)
     parser.add_argument("--window-offset", type=float, help="Specify number of pixels to slide window on each step", default=950)
     parser.add_argument("--limit", type=int, help="Useful for debugging, process only this many windows", default=0)
+    parser.add_argument("--fill-value", type=float, help="Set the _FillValue to this number", default=None)
 
     args = parser.parse_args()
 
@@ -221,6 +222,8 @@ def main():
     encoding = {}
     for v in args.variables:
         encoding[v] = {"zlib": True, "complevel": 5, "dtype": np.float32}
+        if args.fill_value is not None:
+            encoding[v]["_FillValue"] = args.fill_value
 
     output_ds.to_netcdf(args.output_path, encoding=encoding)
 
