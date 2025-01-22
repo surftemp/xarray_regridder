@@ -71,10 +71,36 @@ def main():
     parser.add_argument("--limit", type=int, help="Useful for debugging, process only this many windows", default=0)
     parser.add_argument("--fill-value", type=float, help="Set the _FillValue to this number", default=None)
 
+    parser.add_argument("--chuk", action="store_true", help="Perform CHUK specific optimisations")
+
     args = parser.parse_args()
+
+
 
     # get the coordinates of each input data pixel
     input_ds = xr.open_dataset(args.input_path)
+
+    if args.chuk:
+        # define a conservative lat-lon bounding box for the CHUK grid
+        chuk_lat_min = 47
+        chuk_lat_max = 62
+        chuk_lon_min = -16
+        chuk_lon_max = 5
+
+        # get the lat-lon bounding box of the input data
+        input_lat_min = input_ds.latitude.min().item()
+        input_lat_max = input_ds.latitude.max().item()
+        input_lon_min = input_ds.longitude.min().item()
+        input_lon_max = input_ds.longitude.max().item()
+
+        # if there can be no intersection between the input and the chuk grid, stop now
+        if input_lat_min > chuk_lat_max or \
+            input_lat_max < chuk_lat_min or \
+            input_lon_min > chuk_lon_max or \
+            input_lon_max < chuk_lon_min:
+            print(f"No intersection - skipping writing empty output to {args.output_path}")
+            return
+
     source_y = input_ds[args.source_y].data.flatten()
     source_x = input_ds[args.source_x].data.flatten()
 
@@ -221,7 +247,9 @@ def main():
 
     encoding = {}
     for v in args.variables:
-        encoding[v] = {"zlib": True, "complevel": 5, "dtype": np.float32}
+        encoding[v] = { "zlib": True, "complevel": 5, "dtype": np.float32}
+        if args.chuk:
+            encoding[v]["chunksizes"] = [1000, 1000]
         if args.fill_value is not None:
             encoding[v]["_FillValue"] = args.fill_value
 
