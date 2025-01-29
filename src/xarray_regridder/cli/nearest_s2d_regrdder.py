@@ -56,12 +56,12 @@ def main():
     parser.add_argument("output_path",
                         help="path to file to hold combined regridded data OR folder to hold individually regridded files")
 
-    parser.add_argument("--target-y", type=str, help="target grid y coordinate variable nane", default="x")
-    parser.add_argument("--target-x", type=str, help="target grid x coordinate variable nane", default="y")
+    parser.add_argument("--target-y", type=str, help="target grid y coordinate variable name", default="x")
+    parser.add_argument("--target-x", type=str, help="target grid x coordinate variable name", default="y")
     parser.add_argument("--target-crs", type=int, help="target CRS, given as an EPSG number", default=27700)
 
-    parser.add_argument("--source-y", type=str, help="input y coordinate variable nane", default="latitude")
-    parser.add_argument("--source-x", type=str, help="input x coordinate variable nane", default="longitude")
+    parser.add_argument("--source-y", type=str, help="input y coordinate variable name", default="latitude")
+    parser.add_argument("--source-x", type=str, help="input x coordinate variable name", default="longitude")
     parser.add_argument("--source-crs", type=int, help="source CRS, given as an EPSG number", default=4326)
 
     parser.add_argument("--variables", nargs="+", help="Specify variables to process", default=["AOD_0550","AOD_0659"])
@@ -75,8 +75,6 @@ def main():
 
     args = parser.parse_args()
 
-
-
     # get the coordinates of each input data pixel
     input_ds = xr.open_dataset(args.input_path)
 
@@ -88,10 +86,10 @@ def main():
         chuk_lon_max = 5
 
         # get the lat-lon bounding box of the input data
-        input_lat_min = input_ds.latitude.min().item()
-        input_lat_max = input_ds.latitude.max().item()
-        input_lon_min = input_ds.longitude.min().item()
-        input_lon_max = input_ds.longitude.max().item()
+        input_lat_min = input_ds[args.source_y].min().item()
+        input_lat_max = input_ds[args.source_y].max().item()
+        input_lon_min = input_ds[args.source_x].min().item()
+        input_lon_max = input_ds[args.source_x].max().item()
 
         # if there can be no intersection between the input and the chuk grid, stop now
         if input_lat_min > chuk_lat_max or \
@@ -101,10 +99,23 @@ def main():
             print(f"No intersection - skipping writing empty output to {args.output_path}")
             return
 
+        # null out any source coordinates which must lie outside the CHUK area
+        # this is to guard against unstable projection behaviour noticed by KJP
+        source_y = input_ds[args.source_y].data
+        source_x = input_ds[args.source_x].data
+
+        cond = np.logical_and(
+            np.logical_and(source_y <= chuk_lat_max, source_y >= chuk_lat_min),
+            np.logical_and(source_x <= chuk_lon_max, source_y >= chuk_lon_min))
+
+        input_ds[args.source_y].data = np.where(cond, source_y, np.nan)
+        input_ds[args.source_x].data = np.where(cond, source_x, np.nan)
+
     source_y = input_ds[args.source_y].data.flatten()
     source_x = input_ds[args.source_x].data.flatten()
 
     # map the coordinates to the target CRS
+    # note - where input coordinates are nan, the resulting output x,y values are set to inf
     transformer = pyproj.Transformer.from_crs(args.source_crs, args.target_crs, always_xy=True)
     x, y = transformer.transform(source_x, source_y)
 
