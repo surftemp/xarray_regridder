@@ -51,6 +51,7 @@ class Regridder:
         :param target_crs: the target CRS (as an EPSG number)
         """
         self.variables = [self.decode_variable_mode(v) for v in variables]
+
         self.source_x = source_x
         self.source_y = source_y
         self.source_crs = source_crs
@@ -70,9 +71,12 @@ class Regridder:
 
         self.logger = logging.getLogger("Regrid")
 
-        output_names = set()
 
-        self.input_vars = set()
+        self.included_variables = set()  # the subset of variable names that actually exist in the data
+        self.input_vars = set()          # all variable names specified in the processing directives
+
+        # make sure output variable names are unique
+        output_names = set()  # all output variable names
         for (v,mode,output_name) in self.variables:
             self.input_vars.add(v)
             if output_name in output_names:
@@ -97,14 +101,15 @@ class Regridder:
 
         self.grid = grid_ds
 
-        # check target x and y are 1 dimensional
-        if len(self.grid[self.target_x].shape) != 1:
-            self.logger.error("target grid x variable should have only 1 dimension")
-            sys.exit(-1)
+        # check target x and y are 1 dimensional, flatten if necessary
+        # FIXME add more checks here
+        if len(self.grid[self.target_x].shape) == 2:
+            self.logger.warning("flattening target grid x variable to 1 dimension")
+            self.grid[self.target_x] = self.grid[self.target_x][0,:].squeeze()
 
         if len(self.grid[self.target_y].shape) != 1:
-            self.logger.error("target grid y variable should have only 1 dimension")
-            sys.exit(-1)
+            self.logger.error("flattening target grid y variable to 1 dimension")
+            self.grid[self.target_y] = self.grid[self.target_y][:,0].squeeze()
 
         # work out the indices on the target grid
         self.target_y0 = float(self.grid[self.target_y][0])
@@ -146,6 +151,9 @@ class Regridder:
     def ingest(self,ds, stride=1):
 
         for v in self.input_vars:
+            if v not in ds:
+                continue
+            self.included_variables.add(v)
             da = ds[v].squeeze()
             if len(da.dims) != 2:
                 self.logger.error(
@@ -261,6 +269,8 @@ class Regridder:
                                              + np.power(source_coords_y[:-1, :-1] - target_y2d, 2)
 
                 for v in self.input_vars:
+                    if v not in self.included_variables:
+                        continue
                     self.logger.info(f"\t\tCalculating statistics for {v}")
 
                     da = ds[v].squeeze()
@@ -315,6 +325,9 @@ class Regridder:
         encodings = {}
 
         for (v,mode,output_variable) in self.variables:
+
+            if v not in self.included_variables:
+                continue
 
             encodings[output_variable] = {"zlib": True, "complevel": 5, "dtype": str(self.dtypes[v])}
 
