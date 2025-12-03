@@ -24,6 +24,8 @@ import pyproj
 import numpy as np
 import sys
 
+from xarray_regridder import VERSION as XARRAY_REGRIDDER_VERSION
+
 class Progress(object):
 
     def __init__(self,label):
@@ -48,7 +50,9 @@ class Progress(object):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(prog='nearest_s2d_regridder', usage='%(prog)s [options]')
+    parser.add_argument('-V', '--version', action='version', version="%(prog)s " + XARRAY_REGRIDDER_VERSION)
+
     parser.add_argument("input_path",
                         help="input data file to be regridded or folder containing .nc files to be regridded")
     parser.add_argument("target_grid_path",
@@ -72,8 +76,18 @@ def main():
     parser.add_argument("--fill-value", type=float, help="Set the _FillValue to this number", default=None)
 
     parser.add_argument("--chuk", action="store_true", help="Perform CHUK specific optimisations")
+    parser.add_argument(
+        "--check-version",
+        help="check that the version number of this tool matches the specified version string",
+        default=None
+    )
 
     args = parser.parse_args()
+
+    if args.check_version is not None:
+        if XARRAY_REGRIDDER_VERSION != args.check_version:
+            print(f"Version of this tool {XARRAY_REGRIDDER_VERSION} does not match requested version {args.check_version}")
+            sys.exit(-1)
 
     # get the coordinates of each input data pixel
     input_ds = xr.open_dataset(args.input_path)

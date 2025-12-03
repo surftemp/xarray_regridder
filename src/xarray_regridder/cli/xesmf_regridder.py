@@ -24,6 +24,8 @@ import numpy as np
 import os
 import json
 
+from xarray_regridder import VERSION as XARRAY_REGRIDDER_VERSION
+
 m_per_degree = 111000
 
 def copy_metadata_ds(ds, ds_ref):
@@ -233,7 +235,8 @@ def regrid(input_path, grid_path, output_path, method, limit=None, max_distance=
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(prog='xesmf_regridder', usage='%(prog)s [options]')
+    parser.add_argument('-V', '--version', action='version', version="%(prog)s " + XARRAY_REGRIDDER_VERSION)
     parser.add_argument("input_path",
                         help="input data file to be regridded or folder containing files to be regridded")
     parser.add_argument("target_grid_path",
@@ -246,8 +249,18 @@ def main():
     parser.add_argument("--save-distances-as", type=str,
                         help="output distance to nearest source pixel in m to a variable with this name", default=None)
     parser.add_argument("--cache-folder", help="specify a folder to store and reuse regridders", default=None)
+    parser.add_argument(
+        "--check-version",
+        help="check that the version number of this tool matches the specified version string",
+        default=None
+    )
 
     args = parser.parse_args()
+
+    if args.check_version is not None:
+        if XARRAY_REGRIDDER_VERSION != args.check_version:
+            print(f"Version of this tool {XARRAY_REGRIDDER_VERSION} does not match requested version {args.check_version}")
+            sys.exit(-1)
 
     regrid(input_path=args.input_path, grid_path=args.target_grid_path, output_path=args.output_path, method=args.method, limit=args.limit,
            max_distance=args.max_distance, output_distances_as=args.save_distances_as, cache_folder=args.cache_folder)

@@ -11,7 +11,7 @@ if [ -z ${hostname} ] || [ -z ${username} ] || [ -z ${destfolder} ];
 then
   echo provide the host, username and destination folder as arguments
 else
-  rsync -avr $rootfolder/src $username@$hostname:$destfolder/xarray_regridder
+  rsync -avr --delete $rootfolder/src $username@$hostname:$destfolder/xarray_regridder
   rsync -avr $rootfolder/pyproject.toml $username@$hostname:$destfolder/xarray_regridder
   rsync -avr $rootfolder/setup.cfg $username@$hostname:$destfolder/xarray_regridder
 fi

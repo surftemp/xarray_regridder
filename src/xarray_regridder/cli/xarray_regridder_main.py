@@ -22,14 +22,18 @@ import xarray as xr
 import os
 import logging
 import time
+import sys
 
+from xarray_regridder import VERSION as XARRAY_REGRIDDER_VERSION
 from xarray_regridder.api.regridder import Regridder
 
 RETRY_DELAY = 60
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(prog='xarray_regridder', usage='%(prog)s [options]')
+    parser.add_argument('-V', '--version', action='version', version="%(prog)s " + XARRAY_REGRIDDER_VERSION)
+
     parser.add_argument("input_path",
                         help="input data file to be regridded or folder containing .nc files to be regridded")
     parser.add_argument("target_grid_path",
@@ -53,12 +57,22 @@ def main():
     parser.add_argument("--attr", nargs=2, action="append", type=str, metavar=("NAME","VALUE"), help="add global attributes", required=False)
     parser.add_argument("--chunk-sizes", nargs=2, type=str, metavar=("Y-DIMENSION-SIZE", "X-DIMENSION-SIZE"),
                         help="set the chunk sizes for regridded variables", required=False)
+    parser.add_argument(
+        "--check-version",
+        help="check that the version number of this tool matches the specified version string",
+        default=None
+    )
 
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
 
     logger = logging.getLogger("regridder")
+
+    if args.check_version is not None:
+        if XARRAY_REGRIDDER_VERSION != args.check_version:
+            logger.error(f"Version of this tool {XARRAY_REGRIDDER_VERSION} does not match requested version {args.check_version}")
+            sys.exit(-1)
 
     grid_ds = xr.open_dataset(args.target_grid_path)
 
