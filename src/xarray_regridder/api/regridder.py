@@ -31,10 +31,24 @@ class DistanceMethods(enum.Enum):
     CARTESIAN = 1   # calculate distance between pairs of (x,y) points on a cartesian plane
     SPHERICAL = 2   # calculate approximate distance between pairs of (lat,lon) points on a sphere
 
+def interpolate_linear(da, x_dim, y_dim, limit=1):
+    """
+    Perform gap filling using linear interpolation in two passes.  Assumes grid is equally spaced.
+
+    :param da: the DataArray to fill
+    :param x_dim: the name of the x-dimension
+    :param y_dim: the name of the y-dimension
+    :param limit: the maximum gap to fill, in pixels
+    :return: a DataArray with values filled
+    """
+    da = da.interpolate_na(dim=y_dim, method="linear", use_coordinate=False, limit=limit, keep_attrs=True)
+    da = da.interpolate_na(dim=x_dim, method="linear", use_coordinate=False, limit=limit, keep_attrs=True)
+    return da
+
 class Regridder:
 
     def __init__(self, variables, grid_ds,
-                 source_x, source_y, source_crs, target_x, target_y, target_crs):
+                 source_x, source_y, source_crs, target_x, target_y, target_crs, interpolate=0, remove_variables=[]):
         """
         Create a regridder
 
@@ -46,6 +60,8 @@ class Regridder:
         :param target_x: the name of the x-coordinate in the target grid
         :param target_y: the name of the y-coordinate in the target grid
         :param target_crs: the target CRS (as an EPSG number)
+        :param interpolate: use linear interpolation to fill gaps of up to this many pixels
+        :param remove_variables: remove these variables from the output dataset
         """
         self.variables = [self.decode_variable_mode(v) for v in variables]
 
@@ -63,6 +79,9 @@ class Regridder:
 
         self.dataset_attrs = {}
         self.variable_attrs = {}
+
+        self.interpolate = interpolate
+        self.remove_variables = remove_variables
 
         self.dtypes = {}
 
@@ -145,7 +164,7 @@ class Regridder:
             output_name = variable_name + "_" + mode
         return variable_name, mode, output_name
 
-    def ingest(self,ds, stride=1):
+    def ingest(self,ds, stride=None):
 
         for v in self.input_vars:
             if v not in ds:
@@ -185,8 +204,8 @@ class Regridder:
         target_x2d = np.broadcast_to(self.grid[self.target_x], target_shape)
 
         if self.source_crs != self.target_crs:
-            transformer = pyproj.Transformer.from_crs(self.source_crs, self.target_crs)
-            x2d, y2d = transformer.transform(y2d.data, x2d.data)
+            transformer = pyproj.Transformer.from_crs(self.source_crs, self.target_crs, always_xy=True)
+            x2d, y2d = transformer.transform(x2d.data, y2d.data)
             y2d = xr.DataArray(y2d, dims=(source_y_dim, source_x_dim))
             x2d = xr.DataArray(x2d, dims=(source_y_dim, source_x_dim))
 
@@ -212,35 +231,38 @@ class Regridder:
         class InvalidStrideException(Exception):
             pass
 
-        # establish the stride - so that the number of passes over the input data is minimised but
-        # ensures that no input pixels are assigned to the same output pixel on a pass
 
-        while True:
-            indices_by_slice = {}
-            try:
-                for xs in range(0, stride):
-                    for ys in range(0, stride):
-                        s = {}
-                        s[source_x_dim] = slice(xs, None, stride)
-                        s[source_y_dim] = slice(ys, None, stride)
-                        iy = indices_nj.isel(**s)
-                        ix = indices_ni.isel(**s)
-                        indices_by_slice[(ys, xs)] = (s, iy.data, ix.data)
+        if stride is None:
+            # establish the stride - so that the number of passes over the input data is minimised but
+            # ensures that no input pixels are assigned to the same output pixel on a pass
 
-                        # check that in each stride, the set of valid target indices are unique
-                        # if this is not the case, some source values will be ignored, raise an exception
-                        ones = xr.DataArray(np.ones((source_height,source_width),dtype=int),dims=(source_y_dim,source_x_dim))
-                        target_data = xr.DataArray(np.zeros((self.target_height+1,self.target_width+1),dtype=int),dims=(self.target_y,self.target_x))
-                        target_data[iy, ix] = ones.isel(**s).data
-                        valid_target_data = target_data[:-1, :-1]
-                        valid_target_count = valid_target_data.sum().item()
-                        expected_target_count = xr.where(np.logical_and(ix < self.target_width, iy < self.target_height),1,0).sum().item()
-                        if valid_target_count != expected_target_count:
-                            raise InvalidStrideException()
-                break
-            except InvalidStrideException:
-                stride *= 2
-                self.logger.warning(f"Increasing stride to {stride} to avoid data loss")
+            stride = 1
+            while True:
+                indices_by_slice = {}
+                try:
+                    for xs in range(0, stride):
+                        for ys in range(0, stride):
+                            s = {}
+                            s[source_x_dim] = slice(xs, None, stride)
+                            s[source_y_dim] = slice(ys, None, stride)
+                            iy = indices_nj.isel(**s)
+                            ix = indices_ni.isel(**s)
+                            indices_by_slice[(ys, xs)] = (s, iy.data, ix.data)
+
+                            # check that in each stride, the set of valid target indices are unique
+                            # if this is not the case, some source values will be ignored, raise an exception
+                            ones = xr.DataArray(np.ones((source_height,source_width),dtype=int),dims=(source_y_dim,source_x_dim))
+                            target_data = xr.DataArray(np.zeros((self.target_height+1,self.target_width+1),dtype=int),dims=(self.target_y,self.target_x))
+                            target_data[iy, ix] = ones.isel(**s).data
+                            valid_target_data = target_data[:-1, :-1]
+                            valid_target_count = valid_target_data.sum().item()
+                            expected_target_count = xr.where(np.logical_and(ix < self.target_width, iy < self.target_height),1,0).sum().item()
+                            if valid_target_count != expected_target_count:
+                                raise InvalidStrideException()
+                    break
+                except InvalidStrideException:
+                    stride *= 2
+                    self.logger.warning(f"Increasing stride to {stride} to avoid data loss")
 
         for xs in range(0, stride):
             for ys in range(0, stride):
@@ -354,13 +376,28 @@ class Regridder:
             if np.issubdtype(self.dtypes[v], np.integer):
                 encodings[output_variable]["_FillValue"] = -999
 
-            da = xr.DataArray(data=accumulated,dims=dims,attrs=self.variable_attrs.get(v,None))
+            da = xr.DataArray(data=accumulated,dims=dims,attrs=self.variable_attrs.get(v, {}))
+
+            if self.interpolate:
+                da = interpolate_linear(da, self.target_x_dim, self.target_y_dim, self.interpolate)
+
             output_ds[output_variable] = da
 
         for (name,value) in self.dataset_attrs.items():
             output_ds.attrs[name] = value
 
         output_ds.set_coords([self.target_y, self.target_x])
+
+        if self.remove_variables:
+            for v in self.remove_variables:
+                if v in output_ds:
+                    del output_ds[v]
+                if v in encodings:
+                    del encodings[v]
+
+        print(output_ds)
+        print(encodings)
+
         return output_ds, encodings
 
     def reset(self):

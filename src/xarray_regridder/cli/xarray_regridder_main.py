@@ -41,22 +41,26 @@ def main():
     parser.add_argument("output_path",
                         help="path to file to hold combined regridded data OR folder to hold individually regridded files")
 
-    parser.add_argument("--target-y", type=str, help="target grid y coordinate variable nane", default="lat")
-    parser.add_argument("--target-x", type=str, help="target grid x coordinate variable nane", default="lon")
+    parser.add_argument("--target-y", type=str, help="target grid y coordinate variable name", default="lat")
+    parser.add_argument("--target-x", type=str, help="target grid x coordinate variable name", default="lon")
     parser.add_argument("--target-crs", type=int, help="target CRS, given as an EPSG number", default=4326)
 
-    parser.add_argument("--source-y", type=str, help="input y coordinate variable nane", default="lat")
-    parser.add_argument("--source-x", type=str, help="input x coordinate variable nane", default="lon")
+    parser.add_argument("--source-y", type=str, help="input y coordinate variable name", default="lat")
+    parser.add_argument("--source-x", type=str, help="input x coordinate variable name", default="lon")
     parser.add_argument("--source-crs", type=int, help="source CRS, given as an EPSG number", default=4326)
 
     parser.add_argument("--variables", nargs="+", help="Specify variables to process, for nearest use NAME, for other modes (min,max,mean) use NAME:MODE, to specify the output variable name use NAME:MODE:OUTPUT_NAME")
 
     parser.add_argument("--limit", type=int, help="process only this many scenes (for testing)", default=None)
-    parser.add_argument("--stride", type=int, help="set the stride", default=1)
+    parser.add_argument("--stride", type=int, help="set the stride", default=None)
     parser.add_argument("--nr-retries", type=int, help="use this many re-attempts to process each input file", default=0)
     parser.add_argument("--attr", nargs=2, action="append", type=str, metavar=("NAME","VALUE"), help="add global attributes", required=False)
-    parser.add_argument("--chunk-sizes", nargs=2, type=str, metavar=("Y-DIMENSION-SIZE", "X-DIMENSION-SIZE"),
+    parser.add_argument("--chunk-sizes", nargs=2, type=int, metavar=("Y-DIMENSION-SIZE", "X-DIMENSION-SIZE"),
                         help="set the chunk sizes for regridded variables", required=False)
+    parser.add_argument("--interpolate", type=int, metavar=("NR-PIXELS",),
+                        help="perform linear interpolation", default=0)
+    parser.add_argument("--remove-variables", type=str, nargs="+",
+                        help="remove these variables from the output dataset", default=0)
     parser.add_argument(
         "--check-version",
         help="check that the version number of this tool matches the specified version string",
@@ -84,7 +88,10 @@ def main():
         source_crs=args.source_crs,
         target_x=args.target_x,
         target_y=args.target_y,
-        target_crs=args.target_crs)
+        target_crs=args.target_crs,
+        interpolate=args.interpolate,
+        remove_variables=args.remove_variables
+    )
 
     output_individual_files = False
     if os.path.isdir(args.output_path):
@@ -148,6 +155,7 @@ def main():
                     try:
                         logger.info(f"writing: {output_path}")
                         output_ds.to_netcdf(output_path, encoding=encodings)
+                        logger.info(f"writen: {output_path}")
                         break
                     except Exception as ex:
                         logger.error(f"Error writing: {output_path} : {str(ex)}")

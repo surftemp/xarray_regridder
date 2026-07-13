@@ -11,7 +11,7 @@ Installation into a miniforge enviromnent is suggested.  See [https://github.com
 ```
 mamba create -n xarray_regridder_env python=3.10
 mamba activate xarray_regridder_env
-mamba install netcdf4 xarray pyproj xesmf
+mamba install netcdf4 xarray pyproj xesmf scipy
 pip install git+https://github.com/surftemp/xarray_regridder.git
 ```
 
